@@ -1,5 +1,13 @@
 from transformers.models.bart.modeling_bart import *
-from transformers.models.bart.modeling_bart import _expand_mask
+from transformers.models.bart.modeling_bart import (BartConfig, BartEncoder, BartDecoder,
+                                                    BartPretrainedModel, shift_tokens_right,
+                                                    BaseModelOutput, Seq2SeqLMOutput,
+                                                    BartScaledWordEmbedding,
+                                                    BartLearnedPositionalEmbedding)
+import random
+from typing import Optional
+from torch import nn
+from torch.nn import functional as F
 from spring_amr.adapter import *
 import spring_amr.utils as utils
 
@@ -94,8 +102,8 @@ class BartEncoderWithAdapter(BartEncoder):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
-        embed_pos = self.embed_positions(input_shape)
+            inputs_embeds = self.embed_tokens(input_ids)
+        embed_pos = self.embed_positions(input_ids if input_ids is not None else inputs_embeds[:, :, -1])
         hidden_states = inputs_embeds + embed_pos
 
         is_full_graph_mode = hasattr(self, 'orig_graph_data') and self.orig_graph_data is not None and self.orig_graph_data[1] is not None
@@ -110,7 +118,7 @@ class BartEncoderWithAdapter(BartEncoder):
             if self.adapter_config.extra_nodes_as_input:
                 hidden_states = inputs_embeds
                 attention_mask = new_attention_mask
-                extra_states *= self.embed_scale
+                extra_states *= self.embed_tokens.embed_scale
                 new_hidden_states = self.combine_extra_states(orig_tokens_mask, extra_tokens_mask, padding_mask,
                                           hidden_states[input_ids != self.padding_idx], extra_states, padding_states)
                 embed_pos = self.embed_positions(new_hidden_states.shape)
@@ -121,10 +129,10 @@ class BartEncoderWithAdapter(BartEncoder):
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
 
-        # expand attention_mask
+# expand attention_mask
         if attention_mask is not None:
-            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_len]
+            attention_mask = self._update_full_mask(attention_mask, inputs_embeds)
 
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -292,7 +300,9 @@ class AMRBartForConditionalGeneration(BartStructAdaptForConditionalGeneration):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        cache_position=None,
         #align_graph_edges=None
+        **kwargs
     ):
         r"""
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
@@ -326,6 +336,7 @@ class AMRBartForConditionalGeneration(BartStructAdaptForConditionalGeneration):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            cache_position=cache_position,
         )
         lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
 

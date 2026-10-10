@@ -12,7 +12,7 @@ from pathlib import Path
 from spring_amr.multiplier_scheduler import MultiplierScheduler
 
 try:
-    from torch.cuda.amp import autocast
+    from torch.amp import autocast
 
     autocast_available = True
 except ImportError:
@@ -26,7 +26,7 @@ except ImportError:
 
     autocast_available = False
 
-from torch.cuda.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 import transformers
 
 from spring_amr import ROOT
@@ -82,6 +82,7 @@ def do_train(checkpoint=None, direction='amr', split_both_decoder=False, fp16=Fa
 
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device_type = 'cuda' if str(device).startswith('cuda') else 'cpu'
 
     model, tokenizer, snt_tokenizer = instantiate_model_and_tokenizer(
         config['model'],
@@ -164,7 +165,7 @@ def do_train(checkpoint=None, direction='amr', split_both_decoder=False, fp16=Fa
             weight_decay=config['weight_decay'])
 
     if checkpoint is not None and restore_optimizer:
-        optimizer.load_state_dict(torch.load(checkpoint, map_location=device)['optimizer'])
+        optimizer.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=False)['optimizer'])
 
     if config['scheduler'] == 'cosine':
         scheduler = transformers.get_cosine_schedule_with_warmup(
@@ -256,13 +257,13 @@ def do_train(checkpoint=None, direction='amr', split_both_decoder=False, fp16=Fa
                 leaked_model.get_encoder().orig_graph_data = extra['orig_graph_data']
 
             # For GLM
-            if config.adapter['encoder']['graph_mode'] and config.adapter['encoder']['leak_mode'] \
+            if config['adapter']['encoder']['graph_mode'] and config['adapter']['encoder']['leak_mode'] \
                     and config['keep_full_graph'] and config['adapter']['encoder']['extra_nodes_as_input']:
                 _, _, new_attention_mask, _ = extra['orig_graph_data'][1]
                 x['attention_mask'] = new_attention_mask.int()
 
             model.amr_mode = True
-            with autocast(enabled=fp16):
+            with autocast(device_type=device_type, enabled=fp16):
                 if teacher_model is not None:
                     teacher_model.get_encoder().cur_edges = extra['align_graph_edges']
                     teacher_model.get_encoder().orig_graph_data = extra['orig_graph_data']
@@ -352,7 +353,7 @@ def do_train(checkpoint=None, direction='amr', split_both_decoder=False, fp16=Fa
             x, y, extra = batch
             x, y = reverse_direction(x, y)
             model.rev.amr_mode = False
-            with autocast(enabled=fp16):
+            with autocast(device_type=device_type, enabled=fp16):
                 loss, *_ = model.rev(**x, **y)
             scaler.scale((loss / config['accum_steps'])).backward()
             return loss.item()
@@ -371,13 +372,13 @@ def do_train(checkpoint=None, direction='amr', split_both_decoder=False, fp16=Fa
             model.train()
             x, y, extra = batch
             model.amr_mode = True
-            with autocast(enabled=fp16):
+            with autocast(device_type=device_type, enabled=fp16):
                 loss1, *_ = model(**x, **y)
             scaler.scale((loss1 / config['accum_steps'] * 0.5)).backward()
             loss1 = loss1.item()
             x, y = reverse_direction(x, y)
             model.rev.amr_mode = False
-            with autocast(enabled=fp16):
+            with autocast(device_type=device_type, enabled=fp16):
                 loss2, *_ = model.rev(**x, **y)
             scaler.scale((loss2 / config['accum_steps'] * 0.5)).backward()
             return loss1, loss2.item()

@@ -18,6 +18,22 @@ from spring_amr.tokenizer_bart import AMRBartTokenizer, PENMANBartTokenizer
 from transformers.models.bart.tokenization_bart_fast import *
 
 
+def _reset_adapters(model):
+    '''
+    transformers >= 4.5 re-initializes the weights from_pretrained did not find
+    in the checkpoint only for module types it knows. The structural adapters'
+    PyG layers (GCNConv.lin is a torch_geometric Linear, not nn.Linear) are left
+    as uninitialized torch.empty -- |w| ~ 1e26, loss goes NaN on step 1. Rebuild
+    them with PyG's own reset_parameters.
+    '''
+    encoder = model.get_encoder()
+    for group in (getattr(encoder, 'graph_adapters', []), getattr(encoder, 'adapters', [])):
+        for adapter in group:
+            for sub in adapter.modules():
+                if hasattr(sub, 'reset_parameters'):
+                    sub.reset_parameters()
+
+
 def instantiate_model_and_tokenizer(
         name='facebook/bart-large',
         checkpoint=None,
@@ -99,9 +115,10 @@ def instantiate_model_and_tokenizer(
     )
     model = model_type.from_pretrained(name, config=config) if from_pretrained else model_type(config)
     model.resize_token_embeddings(len(tokenizer))
+    _reset_adapters(model)
 
     if checkpoint is not None:
-        model.load_state_dict(torch.load(checkpoint, map_location='cpu')['model'], strict=False)
+        model.load_state_dict(torch.load(checkpoint, map_location='cpu', weights_only=False)['model'], strict=False)
     else:
         if additional_tokens_smart_init:
             modified = 0
